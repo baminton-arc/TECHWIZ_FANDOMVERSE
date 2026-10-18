@@ -1,0 +1,68 @@
+name: Publish FandomVerse
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare independent source
+        if: ${{ hashFiles('src/main.tsx') == '' }}
+        run: |
+          curl -fsSL https://api.github.com/repos/baminton-arc/fandomverse-explorer/tarball/093ee4d -o /tmp/source.tar.gz
+          mkdir /tmp/source
+          tar -xzf /tmp/source.tar.gz --strip-components=1 -C /tmp/source
+          cp -r /tmp/source/src /tmp/source/public .
+          cp /tmp/source/package.json /tmp/source/tsconfig.json /tmp/source/components.json /tmp/source/eslint.config.js /tmp/source/.prettierrc /tmp/source/.prettierignore /tmp/source/.gitignore .
+          python3 <<'PY'
+          from pathlib import Path
+          import json
+          for f in ['src/start.ts','src/server.ts','src/lib/error-capture.ts','src/lib/error-page.ts','src/lib/lovable-error-reporting.ts','src/routes/README.md']:
+              Path(f).unlink(missing_ok=True)
+          for p in Path('src').rglob('*.asset.json'): p.unlink()
+          p=Path('src/routes/__root.tsx'); s=p.read_text()
+          s=s.replace('  Scripts,\n','').replace('import { useEffect, type ReactNode } from "react";\n','').replace('import { reportLovableError } from "../lib/lovable-error-reporting";\n','')
+          s=s.replace('  useEffect(() => {\n    reportLovableError(error, { boundary: "tanstack_root_error_component" });\n  }, [error]);\n','').replace('  shellComponent: RootShell,\n','')
+          a=s.index('function RootShell('); b=s.index('function RootComponent()',a); s=s[:a]+s[b:]
+          s=s.replace('href="/"','href={import.meta.env.BASE_URL}').replace('href: "/favicon.ico"','href: `${import.meta.env.BASE_URL}favicon.ico`').replace('<FavouritesProvider>','<FavouritesProvider>\n        <HeadContent />'); p.write_text(s)
+          p=Path('src/router.tsx'); s=p.read_text().replace('createRouter }','createRouter, createHashHistory }').replace('    routeTree,','    routeTree,\n    history: createHashHistory(),'); p.write_text(s)
+          p=Path('src/routeTree.gen.ts'); s=p.read_text(); p.write_text(s[:s.index('import type { getRouter }')])
+          p=Path('package.json'); d=json.loads(p.read_text()); d['name']='techwiz-fandomverse'; d['dependencies'].pop('@tanstack/react-start',None); d['dependencies'].pop('@tanstack/router-plugin',None); d['dependencies']['@tanstack/react-router']='1.170.41'; d['devDependencies'].pop('@lovable.dev/vite-tanstack-config',None); d['devDependencies'].pop('nitro',None); p.write_text(json.dumps(d,indent=2)+'\n')
+          Path('vite.config.ts').write_text('import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\nimport tailwindcss from "@tailwindcss/vite";\nimport { fileURLToPath, URL } from "node:url";\nexport default defineConfig({ base: "/TECHWIZ_FANDOMVERSE/", plugins: [react(), tailwindcss()], resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } } });\n')
+          Path('index.html').write_text('<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>FandomVerse</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>\n')
+          Path('src/main.tsx').write_text('import { createRoot } from "react-dom/client";\nimport { RouterProvider } from "@tanstack/react-router";\nimport { getRouter } from "./router";\nimport "./styles.css";\nconst root = document.getElementById("root");\nif (!root) throw new Error("Missing application root");\ncreateRoot(root).render(<RouterProvider router={getRouter()} />);\n')
+          Path('README.md').write_text('# TECHWIZ FandomVerse\n\nInteractive fandom gallery built with React, TanStack Router, Three.js and Tailwind CSS.\n\nRun `bun install` then `bun run dev`. GitHub Actions publishes on each push to main. Routes use hash navigation for static hosting. Poster artwork belongs to its respective owners.\n')
+          Path('AGENTS.md').write_text('# Architecture\n\n- Use standalone Vite and TanStack Router with hash history so static hosting requires no application server.\n')
+          PY
+          git config user.name 'john cepe'
+          git config user.email '243495286+baminton-arc@users.noreply.github.com'
+          git add src public package.json tsconfig.json components.json eslint.config.js .prettierrc .prettierignore .gitignore vite.config.ts index.html README.md AGENTS.md
+          git commit -m 'Add standalone FandomVerse website'
+          git push
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run build
+      - name: Check clean output
+        run: |
+          if grep -rilE 'lovable|/__l5e' dist --include='*.js' --include='*.html' --include='*.css'; then echo 'Unexpected platform reference'; exit 1; fi
+          touch dist/.nojekyll
+          cp dist/index.html dist/404.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v4
